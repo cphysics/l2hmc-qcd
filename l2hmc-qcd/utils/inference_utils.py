@@ -33,6 +33,7 @@ IS_CHIEF = (RANK == 0)
 #  try:
 #      import horovod.tensorflow as hvd
 #
+
 #      hvd.init()
 #      RANK = hvd.rank()
 #      io.log(f'Number of devices: {hvd.size()}', RANK)
@@ -289,10 +290,10 @@ def run_dynamics(dynamics, flags, x=None, save_x=False, run_md=False):
             x = mc_states.out.x
 
     try:
-        x, metrics = test_step(x, beta)
+        x, metrics = test_step((x, beta))
     except:
         test_step = dynamics.test_step
-        x, metrics = test_step(x, beta)
+        x, metrics = test_step((x, beta))
 
     header = run_data.get_header(metrics,
                                  skip=['charges'],
@@ -304,7 +305,7 @@ def run_dynamics(dynamics, flags, x=None, save_x=False, run_md=False):
 
     def timed_step(x: tf.Tensor, beta: tf.Tensor):
         start = time.time()
-        x, metrics = test_step(x, beta)
+        x, metrics = test_step((x, beta))
         metrics.dt = time.time() - start
         if save_x:
             x_arr.append(x.numpy())

@@ -206,10 +206,10 @@ class GaugeDynamics(BaseDynamics):
             _new_net('VNet')  # , vnet_seeds)
 
         else:
-            self.xnets = GaugeNetwork(self.net_config, factor=2.,
-                                      xdim=self.xdim, name='XNet')
-            self.vnets = GaugeNetwork(self.net_config, factor=1.,
-                                      xdim=self.xdim, name='VNet')
+            xnet = GaugeNetwork(self.net_config, factor=2.,
+                                xdim=self.xdim, name='XNet')
+            vnet = GaugeNetwork(self.net_config, factor=1.,
+                                xdim=self.xdim, name='VNet')
 
     @staticmethod
     def mixed_loss(loss, weight):
@@ -255,10 +255,10 @@ class GaugeDynamics(BaseDynamics):
         return ploss, qloss
 
     def train_step(self,
-                   x: tf.Tensor,
-                   beta: tf.Tensor,
+                   inputs: tuple,
                    first_step: bool = False):
         """Perform a single training step."""
+        x, beta = inputs
         start = time.time()
         with tf.GradientTape() as tape:
             states, accept_prob, sumlogdet = self(x, beta, training=True)
@@ -312,8 +312,9 @@ class GaugeDynamics(BaseDynamics):
 
         return states.out.x, metrics
 
-    def test_step(self, x, beta):
+    def test_step(self, inputs: tuple):
         """Perform a single inference step."""
+        x, beta = inputs
         start = time.time()
         states, px, sld = self(x, beta, training=False)
         ploss, qloss = self.calc_losses(states, px)

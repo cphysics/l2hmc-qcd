@@ -21,7 +21,8 @@ if GPUS:
 import utils.file_io as io
 
 from config import HEADER, NET_WEIGHTS_HMC, PI, TF_FLOAT
-from dynamics.gauge_dynamics import build_dynamics, GaugeDynamics
+#  from dynamics.gauge_dynamics import build_dynamics, GaugeDynamics
+from dynamics.gauge_dynamics1 import build_dynamics, GaugeDynamics
 from dynamics.base_dynamics import BaseDynamics
 from utils.attr_dict import AttrDict
 from utils.plotting_utils import plot_data
@@ -36,35 +37,12 @@ from utils.data_containers import DataContainer
 RANK = hvd.rank()
 io.log(f'Number of devices: {hvd.size()}', RANK)
 IS_CHIEF = (RANK == 0)
-'''
-try:
-    import horovod.tensorflow as hvd
 
-    hvd.init()
-    #  RANK = hvd.rank()
-    #  io.log(f'Number of devices: {hvd.size()}', RANK)
-    GPUS = tf.config.experimental.list_physical_devices('GPU')
-    for gpu in GPUS:
-        tf.config.experimental.set_memory_growth(gpu, True)
-        except:  # noqa: E722 pylint:disable=bare-except noqa:E722
-            # Invalid device or cannot modify virtual devices once initialized
-            pass
-    if GPUS:
-        tf.config.experimental.set_visible_devices(
-            GPUS[hvd.local_rank()], 'GPU'
-        )
-
-except ImportError:
-    RANK = 0
-
-IS_CHIEF = (RANK == 0)
-'''
-
-try:
-    tf.config.experimental.enable_mlir_bridge()
-    tf.config.experimental.enable_mlir_graph_optimization()
-except:
-    pass
+#  try:
+#      tf.config.experimental.enable_mlir_bridge()
+#      tf.config.experimental.enable_mlir_graph_optimization()
+#  except:
+#      pass
 
 
 def summarize_dict(d, step, prefix=None):
@@ -302,37 +280,8 @@ def setup(dynamics, flags, dirs=None, x=None, betas=None):
     dynamics.compile(loss=dynamics.calc_losses,
                      optimizer=dynamics.optimizer,
                      experimental_run_tf_function=False)
-    train_step = tf.function(dynamics.train_step)
-    #  try:
-    #  except:  # FIXME: Figure out what exception gets thrown if compile fails
-    #      io.log('ERROR: Unable to wrap `dynamics.train_step` in `tf.function`')
-    #      train_step = dynamics.train_step
+    #  train_step = tf.function(dynamics.train_step)
 
-    #  dynamics.compile(loss=dynamics.calc_losses,
-    #                   optimizer=dynamics.optimizer,
-    #                   experimental_run_tf_function=False)
-    #  train_step = dynamics.train_step
-
-    # Compile dynamics w/ tf.function (autograph)?
-    #  if flags.get('compile', False):
-    #      cstr = 'INFO:Compiling `dynamics.train_step` via tf.function\n'
-    #      io.log(cstr, RANK)
-    #      dynamics.compile(loss=dynamics.calc_losses,
-    #                       optimizer=dynamics.optimizer,
-    #                       experimental_run_tf_function=False)
-    #      train_step = tf.function(dynamics.train_step,
-    #                               experimental_relax_shapes=True)
-    #      #  optionals = tf.autograph.experimental.do_not_convert
-    #      #  train_step = tf.function(dynamics.train_step,
-    #      #                           experimental_relax_shapes=True,
-    #      #                           experimental_autograph_options=optionals)
-    #  else:
-    #      io.log('INFO: Running dynamics.train_step imperatively.\n', RANK)
-    #      dynamics.compile(loss=dynamics.calc_losses,
-    #                       optimizer=dynamics.optimizer,
-    #                       experimental_run_tf_function=False)
-    #      train_step = dynamics.train_step
-    #
     profiler_start_step = 0
     profiler_stop_step = 0
     if flags.profiler:
@@ -346,7 +295,7 @@ def setup(dynamics, flags, dirs=None, x=None, betas=None):
         'writer': writer,
         'manager': manager,
         'checkpoint': ckpt,
-        'train_step': train_step,
+        #  'train_step': train_step,
         'train_data': train_data,
         'profiler_start_step': profiler_start_step,
         'profiler_stop_step': profiler_stop_step,
@@ -370,7 +319,7 @@ def train_dynamics(
     #  md_steps = 5
     steps = outputs.steps
     betas = outputs.betas
-    train_step = outputs.train_step
+    #  train_step = outputs.train_step
     ckpt = outputs.checkpoint
     manager = outputs.manager
     train_data = outputs.train_data
@@ -379,16 +328,20 @@ def train_dynamics(
         writer.set_as_default()
 
     # run a single step to get header
-    first_step = (dynamics.optimizer.iterations.numpy() == 0)
-    try:
-        x, metrics = train_step(x, betas[0], first_step=first_step)
-    except:
-        train_step = dynamics.train_step
-        x, metrics = train_step(x, betas[0], first_step=first_step)
+    x, metrics = dynamics.train_step((x, betas[0]))
+    #  first_step = (dynamics.optimizer.iterations.numpy() == 0)
+    #  try:
+    #      x, metrics = train_step((x, betas[0]))
+    #      io.log('INFO:Compiled `dynamics.train_step` using `tf.function`')
+    #  except:
+    #      train_step = dynamics.train_step
+    #      x, metrics = train_step((x, betas[0]))
+    #      io.log('INFO:Running `dynamics.train_step` imperatively.')
 
     def _timed_step(x: tf.Tensor, beta: tf.Tensor):
         start = time.time()
-        x, metrics = train_step(x, beta)
+        x, metrics = dynamics.train_step((x, beta))
+        #  x, metrics = train_step((x, beta))
         metrics.dt = time.time() - start
         return x, metrics
 

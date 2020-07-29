@@ -58,7 +58,7 @@ class GaugeLattice:
 
     def calc_wilson_loops(self, x):
         """Calculate the plaquettes by summing the links in CCW direction."""
-        x = tf.reshape(x, shape=self._shape)
+        x = tf.reshape(x, shape=(-1, *self._shape[1:]))
         # if x.shape = (B, T, X, D) -> plaqs.shape = (B, T, L)
         plaqs = (x[..., 0]
                  - x[..., 1]

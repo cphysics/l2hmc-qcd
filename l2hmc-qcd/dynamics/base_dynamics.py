@@ -93,9 +93,9 @@ class BaseDynamics(tf.keras.Model):
         self.masks = self._build_masks(self.mask_type)
         #  self._construct_time()
         if self.config.hmc:
-            self.xnets, self.vnets = self._build_hmc_networks()
+            self.xnet, self.vnet = self._build_hmc_networks()
         else:
-            self._build_networks()
+            self.xnet, self.vnet = self._build_networks()
 
         if self._has_trainable_params:
             self.lr_config = lr_config
@@ -148,7 +148,7 @@ class BaseDynamics(tf.keras.Model):
 
         return params
 
-    def call(self, x: tf.Tensor, beta: tf.Tensor, training: bool = None):
+    def call(self, inputs: tuple, training: bool = None):
         """Call `self.apply_transition`.
 
         Returns:
@@ -156,7 +156,7 @@ class BaseDynamics(tf.keras.Model):
             accept_prob (tf.Tensor): Acceptance probabilities; (batch_size,)
             sld_states: (MonteCarloStates): Initial, proposed, output sumlogdet
         """
-        return self.apply_transition(x, beta, training=training)
+        return self.apply_transition(inputs, training=training)
 
     def calc_losses(self, states: MonteCarloStates, accept_prob: tf.Tensor):
         """Calculate the total loss."""
@@ -182,11 +182,11 @@ class BaseDynamics(tf.keras.Model):
 
         return loss
 
-    def train_step(self, x: tf.Tensor, beta: tf.Tensor, first_step: bool):
+    def train_step(self, inputs: tuple, first_step: bool):
         """Perform a single training step."""
         raise NotImplementedError
 
-    def test_step(self, x: tf.Tensor, beta: tf.Tensor):
+    def test_step(self, inputs: tuple):
         """Perform a single inference step."""
         raise NotImplementedError
 
@@ -211,8 +211,7 @@ class BaseDynamics(tf.keras.Model):
 
     def apply_transition(
             self,
-            x: tf.Tensor,
-            beta: tf.Tensor,
+            inputs: tuple,
             training: bool = None,
     ):
         """Propose a new state and perform the accept/reject step.
@@ -221,12 +220,12 @@ class BaseDynamics(tf.keras.Model):
         backward directions, and use sampled masks to compute the actual
         solutions.
         """
-        #  x_init, beta = inputs
+        x, beta = inputs
         # Simulate the dynamics both forward and backward;
         # Use sampled Bernoulli masks to compute the actual solutions
-        sf_init, sf_prop, pxf, sldf = self._transition(x, beta, forward=True,
+        sf_init, sf_prop, pxf, sldf = self._transition(inputs, forward=True,
                                                        training=training)
-        sb_init, sb_prop, pxb, sldb = self._transition(x, beta, forward=False,
+        sb_init, sb_prop, pxb, sldb = self._transition(inputs, forward=False,
                                                        training=training)
 
         # Combine the forward / backward outputs;
@@ -261,14 +260,14 @@ class BaseDynamics(tf.keras.Model):
 
         return mc_states, accept_prob, sld_states
 
-    def md_update(self, x: tf.Tensor, beta: tf.Tensor, training: bool = None):
+    def md_update(self, inputs: tuple, training: bool = None):
         """Perform the molecular dynamics (MD) update w/o accept/reject."""
-        #  x_init, beta = inputs
+        x, beta = inputs
         # Simulate the dynamics both forward and backward;
         # Use sampled Bernoulli masks to compute the actual solutions
-        sf_init, sf_prop, _, sldf = self._transition(x, beta, forward=True,
+        sf_init, sf_prop, _, sldf = self._transition(inputs, forward=True,
                                                      training=training)
-        sb_init, sb_prop, _, sldb = self._transition(x, beta, forward=False,
+        sb_init, sb_prop, _, sldb = self._transition(inputs, forward=False,
                                                      training=training)
         mf_, mb_ = self._get_direction_masks()
         mf = mf_[:, None]
@@ -293,17 +292,16 @@ class BaseDynamics(tf.keras.Model):
 
     def _transition(
             self,
-            x: tf.Tensor,
-            beta: tf.Tensor,
+            inputs: tuple,
             forward: bool,
             training: bool = None
     ):
         """Run the augmented leapfrog integrator."""
-        #  x_init, beta = inputs
+        x, beta = inputs
         v = tf.random.normal(tf.shape(x))
         state = State(x=x, v=v, beta=beta)
-        state_, px, sld = self.transition_kernel_for(state, forward, training)
-        #  state_, px, sld = self.transition_kernel(state, forward, training)
+        #  state_, px, sld = self.transition_kernel_for(state, forward, training)
+        state_, px, sld = self.transition_kernel(state, forward, training)
         #  if self.config.separate_networks:
         #      tk_fn = self.transition_kernel_for
         #  else:
@@ -319,8 +317,8 @@ class BaseDynamics(tf.keras.Model):
         sld = tf.zeros((self.batch_size,), dtype=state.x.dtype)
 
         def body(step, state, logdet):
-            new_state, logdet = lf_fn(step, state, training=training)
-            return step+1, new_state, sld+logdet
+            state, logdet = lf_fn(step, state, training=training)
+            return step+1, state, sld+logdet
 
         # pylint:disable=unused-argument
         def cond(step, *args):
@@ -368,20 +366,18 @@ class BaseDynamics(tf.keras.Model):
     def _forward_lf(self, step, state, training=None):
         """Run the augmented leapfrog integrator in the forward direction."""
         m, mc = self._get_mask(step)  # pylint: disable=invalid-name
-        xnet, vnet = self._get_network(step)
+        #  xnet, vnet = self._get_network(step)
         t = self._get_time_old(step, tile=tf.shape(state.x)[0])
 
         sumlogdet = tf.constant(0., dtype=state.x.dtype)
 
-        state, logdet = self._update_v_forward(vnet, state, t, training)
+        state, logdet = self._update_v_forward(state, t, training)
         sumlogdet += logdet
-        state, logdet = self._update_x_forward(xnet, state, t,
-                                               (m, mc), training)
+        state, logdet = self._update_x_forward(state, t, (m, mc), training)
         sumlogdet += logdet
-        state, logdet = self._update_x_forward(xnet, state, t,
-                                               (mc, m), training)
+        state, logdet = self._update_x_forward(state, t, (mc, m), training)
         sumlogdet += logdet
-        state, logdet = self._update_v_forward(vnet, state, t, training)
+        state, logdet = self._update_v_forward(state, t, training)
         sumlogdet += logdet
 
         return state, sumlogdet
@@ -391,23 +387,21 @@ class BaseDynamics(tf.keras.Model):
         step_r = self.config.num_steps - step - 1
         t = self._get_time_old(step_r, tile=tf.shape(state.x)[0])
         m, mc = self._get_mask(step_r)
-        xnet, vnet = self._get_network(step_r)
+        #  xnet, vnet = self._get_network(step_r)
 
         sumlogdet = 0.
-        state, logdet = self._update_v_backward(vnet, state, t, training)
+        state, logdet = self._update_v_backward(state, t, training)
         sumlogdet += logdet
-        state, logdet = self._update_x_backward(xnet, state, t,
-                                                (mc, m), training)
+        state, logdet = self._update_x_backward(state, t, (mc, m), training)
         sumlogdet += logdet
-        state, logdet = self._update_x_backward(xnet, state, t,
-                                                (m, mc), training)
+        state, logdet = self._update_x_backward(state, t, (m, mc), training)
         sumlogdet += logdet
-        state, logdet = self._update_v_backward(vnet, state, t, training)
+        state, logdet = self._update_v_backward(state, t, training)
         sumlogdet += logdet
 
         return state, sumlogdet
 
-    def _update_v_forward(self, network, state, t, training):
+    def _update_v_forward(self, state, t, training):
         """Update the momentum `v` in the forward leapfrog step.
 
         Args:
@@ -423,7 +417,8 @@ class BaseDynamics(tf.keras.Model):
         x = self.normalizer(state.x)
 
         grad = self.grad_potential(x, state.beta)
-        S, T, Q = network((x, grad, t), training)
+        S, T, Q = self.vnet((x, grad, t), training)
+        #  S, T, Q = network((x, grad, t), training)
 
         transl = self._vtw * T
         scale = self._vsw * (0.5 * self.eps * S)
@@ -439,7 +434,7 @@ class BaseDynamics(tf.keras.Model):
 
         return state_out, logdet
 
-    def _update_x_forward(self, network, state, t, masks, training):
+    def _update_x_forward(self, state, t, masks, training):
         """Update the position `x` in the forward leapfrog step.
 
         Args:
@@ -454,7 +449,8 @@ class BaseDynamics(tf.keras.Model):
         x = self.normalizer(state.x)
 
         m, mc = masks
-        S, T, Q = network((state.v, m * x, t), training)
+        S, T, Q = self.xnet((state.v, m * x, t), training)
+        #  S, T, Q = network((state.v, m * x, t), training)
 
         transl = self._xtw * T
         scale = self._xsw * (self.eps * S)
@@ -473,7 +469,7 @@ class BaseDynamics(tf.keras.Model):
 
         return state_out, logdet
 
-    def _update_v_backward(self, network, state, t, training):
+    def _update_v_backward(self, state, t, training):
         """Update the momentum `v` in the backward leapfrog step.
 
         Args:
@@ -488,7 +484,8 @@ class BaseDynamics(tf.keras.Model):
         x = self.normalizer(state.x)
 
         grad = self.grad_potential(x, state.beta)
-        S, T, Q = network((x, grad, t), training)
+        S, T, Q = self.vnet((x, grad, t), training)
+        #  S, T, Q = network((x, grad, t), training)
 
         scale = self._vsw * (-0.5 * self.eps * S)
         transf = self._vqw * (self.eps * Q)
@@ -504,7 +501,7 @@ class BaseDynamics(tf.keras.Model):
 
         return state_out, logdet
 
-    def _update_x_backward(self, network, state, t, masks, training):
+    def _update_x_backward(self, state, t, masks, training):
         """Update the position `x` in the forward leapfrog step.
 
         Args:
@@ -519,8 +516,12 @@ class BaseDynamics(tf.keras.Model):
         x = self.normalizer(state.x)
 
         m, mc = masks
-        S, T, Q = network((state.v, m * x, t), training)
+        S, T, Q = self.xnet((state.v, m * x, t), training)
+        #  S, T, Q = network((state.v, m * x, t), training)
 
+        #  scale = self.net_weights.x_scale * (-self.eps * S)
+        #  transl = self.net_weights.x_translation * T
+        #  transf = self.net_weights.x_transformation * (self.eps * Q)
         scale = self._xsw * (-self.eps * S)
         transl = self._xtw * T
         transf = self._xqw * (self.eps * Q)
@@ -661,19 +662,19 @@ class BaseDynamics(tf.keras.Model):
     @staticmethod
     def _build_hmc_networks():
         # pylint:disable=unused-argument
-        xnets = lambda inputs, is_training: [  # noqa: E731
+        xnet = lambda inputs, is_training: [  # noqa: E731
             tf.zeros_like(inputs[0]) for _ in range(3)
         ]
-        vnets = lambda inputs, is_training: [  # noqa: E731
+        vnet = lambda inputs, is_training: [  # noqa: E731
             tf.zeros_like(inputs[0]) for _ in range(3)
         ]
 
-        return xnets, vnets
+        return xnet, vnet
 
     def _get_network(self, step):
-        return self.xnets, self.vnets
+        return self.xnet, self.vnet
 
-    def _build_eps(self, use_log=True):
+    def _build_eps(self, use_log=False):
         """Create `self.eps` (i.e. the step size) as a `tf.Variable`.
 
         Args:
